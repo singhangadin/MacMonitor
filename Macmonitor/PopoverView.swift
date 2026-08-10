@@ -1,11 +1,29 @@
 import SwiftUI
 import ServiceManagement
+import WidgetKit
+
+enum AppTheme: String, CaseIterable, Identifiable {
+    case automatic
+    case light
+    case dark
+
+    var id: String { rawValue }
+    var label: String { rawValue.capitalized }
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .automatic: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
 
 // MARK: - Root
 
 struct PopoverView: View {
     @ObservedObject var model: SystemStatsModel
     @State private var showSettings = false
+    @AppStorage("appTheme") private var appTheme = AppTheme.automatic.rawValue
 
     // Section visibility (configurable in Settings). Each section is preceded by a
     // separator, so hiding a section hides its separator too — no stray dividers.
@@ -41,7 +59,8 @@ struct PopoverView: View {
             }
         }
         .frame(width: 340)
-        .background(Color(hex: "0E0E12"))
+        .background(Color(nsColor: .windowBackgroundColor))
+        .preferredColorScheme(AppTheme(rawValue: appTheme)?.colorScheme)
         .sheet(isPresented: $showSettings) {
             SettingsSheet(isPresented: $showSettings)
         }
@@ -49,7 +68,7 @@ struct PopoverView: View {
 
     private var sep: some View {
         Rectangle()
-            .fill(Color.white.opacity(0.06))
+            .fill(Color.primary.opacity(0.08))
             .frame(height: 1)
             .padding(.horizontal, 14)
     }
@@ -100,7 +119,7 @@ private struct Header: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(model.chipName)
                     .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 HStack(spacing: 5) {
                     Circle().fill(thermalColor).frame(width: 6, height: 6)
                     Text(model.thermalState)
@@ -112,10 +131,10 @@ private struct Header: View {
             VStack(alignment: .trailing, spacing: 2) {
                 Text(String(format: "%.1f W", model.totalPower))
                     .font(.system(size: 13, weight: .medium, design: .monospaced))
-                    .foregroundColor(.white)
+                    .foregroundColor(.primary)
                 Text("total power")
                     .font(.system(size: 10))
-                    .foregroundColor(Color(hex: "666680"))
+                    .foregroundColor(.secondary)
             }
             Button { showSettings = true } label: {
                 ZStack(alignment: .topTrailing) {
@@ -194,7 +213,7 @@ private struct FanSection: View {
                 HStack {
                     Text("\(model.fanRPM) RPM")
                         .font(.system(size: 12, design: .monospaced))
-                        .foregroundColor(.white)
+                        .foregroundColor(.primary)
                     Spacer()
                 }
             }
@@ -415,7 +434,7 @@ private struct IORow: View {
             Image(systemName: icon).font(.system(size: 9)).foregroundColor(color)
             Text(val)
                 .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(Color(hex: "EBEBF5"))
+                .foregroundColor(.primary)
             Spacer()
         }
     }
@@ -449,10 +468,10 @@ private struct PowerTile: View {
             Spacer()
             Text(String(format: val >= 1 ? "%.2f W" : "%.3f W", val))
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(highlight ? Color(hex:"FFD60A") : .white)
+                .foregroundColor(highlight ? Color(hex:"FFD60A") : .primary)
         }
         .padding(.horizontal, 8).padding(.vertical, 5)
-        .background(Color.white.opacity(highlight ? 0.07 : 0.03))
+        .background(Color.primary.opacity(highlight ? 0.07 : 0.03))
         .cornerRadius(6)
     }
 }
@@ -468,12 +487,12 @@ private struct ProcessSection: View {
                 Text("CPU").frame(width: 40, alignment: .trailing)
                 Text("Memory").frame(width: 64, alignment: .trailing)
             }
-            .font(.system(size: 9)).foregroundColor(Color(hex: "666680"))
+            .font(.system(size: 9)).foregroundColor(.secondary)
 
             ForEach(model.topProcs) { p in
                 HStack(spacing: 0) {
                     Text(p.name)
-                        .font(.system(size: 11)).foregroundColor(Color(hex: "EBEBF5"))
+                        .font(.system(size: 11)).foregroundColor(.primary)
                         .lineLimit(1).truncationMode(.middle)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     Text(String(format: "%.1f%%", p.cpu))
@@ -527,10 +546,9 @@ private struct FooterBar: View {
 
 struct SettingsSheet: View {
     @Binding var isPresented: Bool
-    @AppStorage("enableMenuBar") var enableMenuBar = true
-    @AppStorage("enableWidget")  var enableWidget  = false
     @AppStorage("openAtLogin")   var openAtLogin   = false
     @AppStorage("showDockIcon")  var showDockIcon  = false
+    @AppStorage("appTheme") private var appTheme = AppTheme.automatic.rawValue
 
     // Display
     @AppStorage("tempUnit")        var tempUnit        = "C"
@@ -557,7 +575,7 @@ struct SettingsSheet: View {
             ScrollView(.vertical, showsIndicators: false) {
                 VStack(alignment: .leading, spacing: 18) {
                     Text("Settings")
-                        .font(.system(size: 16, weight: .bold)).foregroundColor(.white)
+                        .font(.system(size: 16, weight: .bold)).foregroundColor(.primary)
 
                     generalGroup
                     displayGroup
@@ -566,14 +584,14 @@ struct SettingsSheet: View {
                 .padding(22)
             }
 
-            Divider().background(Color.white.opacity(0.1))
+            Divider().background(Color.primary.opacity(0.1))
 
             aboutBar
                 .padding(.horizontal, 22).padding(.vertical, 14)
         }
         .frame(width: 320, height: 560)
-        .background(Color(hex: "1C1C1E"))
-        .preferredColorScheme(.dark)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .preferredColorScheme(AppTheme(rawValue: appTheme)?.colorScheme)
     }
 
     // MARK: General
@@ -581,9 +599,6 @@ struct SettingsSheet: View {
     private var generalGroup: some View {
         VStack(alignment: .leading, spacing: 14) {
             groupHeader("General")
-
-            settingToggle("Menu Bar App", $enableMenuBar,
-                          "Live stats in your menu bar. Click to open the full dashboard.")
 
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Open at Login", isOn: $openAtLogin)
@@ -598,8 +613,18 @@ struct SettingsSheet: View {
                 settingCaption("Automatically start MacMonitor when you log in.")
             }
 
-            settingToggle("Desktop Widget", $enableWidget,
-                          "Right-click your desktop → Edit Widgets → find MacMonitor.")
+            VStack(alignment: .leading, spacing: 6) {
+                HStack {
+                    Text("Desktop Widget")
+                        .font(.system(size: 12, weight: .medium))
+                    Spacer()
+                    Button("Refresh Now") {
+                        WidgetCenter.shared.reloadAllTimelines()
+                    }
+                    .font(.system(size: 11))
+                }
+                settingCaption("Right-click your desktop → Edit Widgets → find MacMonitor. It refreshes automatically while MacMonitor is running.")
+            }
 
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Show Dock Icon", isOn: $showDockIcon)
@@ -618,6 +643,18 @@ struct SettingsSheet: View {
     private var displayGroup: some View {
         VStack(alignment: .leading, spacing: 14) {
             groupHeader("Display")
+
+            VStack(alignment: .leading, spacing: 6) {
+                settingRow("Appearance") {
+                    Picker("", selection: $appTheme) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Text(theme.label).tag(theme.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented).labelsHidden().frame(width: 170)
+                }
+                settingCaption("Automatic follows your Mac’s current appearance.")
+            }
 
             settingRow("Temperature") {
                 Picker("", selection: $tempUnit) {
@@ -711,12 +748,12 @@ struct SettingsSheet: View {
     private func groupHeader(_ title: String) -> some View {
         Text(title.uppercased())
             .font(.system(size: 9, weight: .semibold, design: .rounded))
-            .foregroundColor(Color(hex: "888899")).tracking(0.6)
+            .foregroundColor(.secondary).tracking(0.6)
     }
 
     private func settingCaption(_ text: String) -> some View {
         Text(text)
-            .font(.system(size: 11)).foregroundColor(Color(hex: "666680"))
+            .font(.system(size: 11)).foregroundColor(.secondary)
             .fixedSize(horizontal: false, vertical: true)
     }
 
@@ -733,7 +770,7 @@ struct SettingsSheet: View {
                                            @ViewBuilder _ control: () -> Content) -> some View {
         HStack {
             Text(title)
-                .font(.system(size: 12)).foregroundColor(Color(hex: "EBEBF5"))
+                .font(.system(size: 12)).foregroundColor(.primary)
             Spacer()
             control()
         }
@@ -743,7 +780,7 @@ struct SettingsSheet: View {
         Toggle(title, isOn: binding)
             .toggleStyle(SwitchToggleStyle(tint: Color(hex: "30D158")))
             .font(.system(size: 12))
-            .foregroundColor(Color(hex: "EBEBF5"))
+            .foregroundColor(.primary)
     }
 
     // MARK: About / update
@@ -752,7 +789,7 @@ struct SettingsSheet: View {
         HStack(alignment: .center, spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("MacMonitor  v\(updater.currentVersion)")
-                        .font(.system(size: 11, weight: .semibold)).foregroundColor(.white)
+                        .font(.system(size: 11, weight: .semibold)).foregroundColor(.primary)
                     Group {
                         switch updater.updatePhase {
                         case .idle:
@@ -761,7 +798,7 @@ struct SettingsSheet: View {
                                     .foregroundColor(Color(hex: "FF9F0A"))
                             } else {
                                 Text("Apple Silicon  ·  macOS 13+  ·  MIT")
-                                    .foregroundColor(Color(hex: "666680"))
+                                    .foregroundColor(.secondary)
                             }
                         case .downloading:
                             Text("Downloading v\(updater.latestVersion)…")
@@ -802,7 +839,7 @@ struct SettingsSheet: View {
                                 .frame(width: 80)
                             Text("\(Int(updater.downloadFraction * 100))%")
                                 .font(.system(size: 10, design: .monospaced))
-                                .foregroundColor(Color(hex: "888899"))
+                                .foregroundColor(.secondary)
                         }
                     case .installing:
                         ProgressView()
@@ -849,7 +886,7 @@ private struct Row<R: View>: View {
     var body: some View {
         HStack(spacing: 8) {
             Text(label)
-                .font(.system(size: 11)).foregroundColor(Color(hex: "ABABC0"))
+                .font(.system(size: 11)).foregroundColor(.secondary)
                 .frame(width: 130, alignment: .leading).lineLimit(1)
             right
         }
@@ -865,7 +902,7 @@ private struct StatBar: View {
         HStack(spacing: 6) {
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 3).fill(Color.white.opacity(0.07))
+                    RoundedRectangle(cornerRadius: 3).fill(Color.primary.opacity(0.08))
                     RoundedRectangle(cornerRadius: 3).fill(barColor)
                         .frame(width: g.size.width * CGFloat(min(pct,100)) / 100)
                         .animation(.easeInOut(duration: 0.4), value: pct)
@@ -873,7 +910,7 @@ private struct StatBar: View {
             }
             .frame(height: 7)
             Text("\(pct)%")
-                .font(.system(size: 11, design: .monospaced)).foregroundColor(.white)
+                .font(.system(size: 11, design: .monospaced)).foregroundColor(.primary)
                 .frame(width: 32, alignment: .trailing)
         }
     }
@@ -895,7 +932,7 @@ private struct CoreTile: View {
                 .frame(width: 22, alignment: .leading)
             GeometryReader { g in
                 ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 2).fill(Color.white.opacity(0.06))
+                    RoundedRectangle(cornerRadius: 2).fill(Color.primary.opacity(0.08))
                     RoundedRectangle(cornerRadius: 2).fill(color)
                         .frame(width: g.size.width * CGFloat(min(pct,100)) / 100)
                         .animation(.easeInOut(duration: 0.4), value: pct)
@@ -904,7 +941,7 @@ private struct CoreTile: View {
             .frame(height: 5)
             Text("\(Int(pct))%")
                 .font(.system(size: 9, design: .monospaced))
-                .foregroundColor(Color(hex:"666680"))
+                .foregroundColor(.secondary)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
                 .frame(width: 26, alignment: .trailing)
@@ -928,8 +965,8 @@ private struct KV: View {
     init(_ k: String, _ v: String) { self.k = k; self.v = v }
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(k).font(.system(size: 9)).foregroundColor(Color(hex:"666680"))
-            Text(v).font(.system(size: 11, design: .monospaced)).foregroundColor(Color(hex:"EBEBF5"))
+            Text(k).font(.system(size: 9)).foregroundColor(.secondary)
+            Text(v).font(.system(size: 11, design: .monospaced)).foregroundColor(.primary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

@@ -7,6 +7,119 @@ Dates: ISO 8601 (YYYY-MM-DD)
 
 ---
 
+## [2.0.5] — 2026-08-06
+
+### The "Widget Actually Exists" Release
+
+Ships the desktop widget, which had been dead code in the repo since 2.0.0, adds the
+first real customization options, and fixes code signing — every release before this
+one shipped unsigned.
+
+### Added
+
+- **Compact CPU-only menu bar mode** — optionally show just the live CPU percentage
+  (for example, `12%`) instead of the full CPU, temperature, and memory label. Opt-in,
+  so the existing detailed indicator stays the default.
+  ([#14](https://github.com/ryyansafar/MacMonitor/pull/14), thanks @Fletcher-Alderton)
+- **Light appearance** — the dashboard, settings, and welcome window now use adaptive
+  system colours and remain legible in both light and dark appearances.
+  ([#14](https://github.com/ryyansafar/MacMonitor/pull/14), thanks @Fletcher-Alderton)
+- **Automatic appearance switching** — Settings offers Automatic, Light, and Dark.
+  Automatic follows the current macOS appearance as it changes.
+  ([#14](https://github.com/ryyansafar/MacMonitor/pull/14), thanks @Fletcher-Alderton)
+- **Desktop widget** — `MacMonitorWidget.swift` shipped in the repo since 2.0.0 but was
+  in no build target, so it never compiled and the "Desktop Widget" toggle in Settings
+  pointed at nothing. It is now a real app-extension target embedded in the app bundle.
+  Add it via right-click the desktop → Edit Widgets → MacMonitor. Small and medium sizes,
+  showing CPU, memory and thermal state. Works on macOS 14+ on the desktop and in
+  Notification Center on macOS 13.
+
+- **Widget refreshes about every 2 seconds** while MacMonitor is running, with rolling
+  digit animation on the readings. Widgets are snapshot-based, so this is as close to
+  live as WidgetKit allows — the dashboard remains the real-time view.
+
+### Changed
+
+- **Settings controls all do something now.** "Desktop Widget" was a switch writing a
+  preference nothing read; macOS owns whether a widget is placed, so it is now a
+  "Refresh Now" button plus accurate placement instructions. "Menu Bar App" was also
+  dead and was removed rather than left as a switch that lies — MacMonitor is a menu bar
+  app, so hiding the icon would remove the only way to reach it, including Settings.
+
+### Fixed
+
+- **Clicking outside the dashboard collapses it**, the same as clicking the menu bar icon
+  again. `NSPopover.behavior = .transient` is meant to handle this, but the app runs as
+  an accessory: a click in another application is delivered to that application and never
+  reaches MacMonitor, so the dashboard just stayed open.
+- **Done button in Settings now closes the window** — Settings opened from the menu bar
+  passed the view a read-only `.constant(true)` binding, so Done wrote to nothing and the
+  red close button was the only way out. Opening Settings repeatedly also stacked a new
+  window each time; it now reuses one.
+- **Widget spacing** — the medium layout left a large dead gap down the left column, and
+  the small layout had the same problem between the bars and the memory line. Both now
+  distribute space between rows instead of pushing all slack into one spacer.
+- **Releases are signed again** — `build-dmg.sh` embedded the privileged helper *after*
+  `-exportArchive`, invalidating the bundle seal, so shipped builds reported "code object
+  is not signed at all". Harmless while the app was a single executable, but it blocked
+  the new widget entirely, since macOS refuses to load an app extension inside an
+  invalidly signed host. The bundle is now re-signed inside-out and verified with
+  `codesign --verify --deep --strict`. **This is the first signed MacMonitor release.**
+- **Dashboard crash during window animation** — dismissing the popover synchronously from
+  a window-geometry notification ran inside a CoreAnimation transaction and could
+  over-release the window transform animation, seen as an `EXC_BAD_ACCESS` in
+  `objc_release`. Dismissal now defers to the next main-queue pass.
+
+---
+
+## [2.0.4] — 2026-08-05
+
+### Fixed
+
+- **Dashboard no longer closes itself every time a value updates** — a regression
+  introduced by the 2.0.3 popover positioning fix made the dashboard effectively
+  impossible to use. The menu bar item is variable-width and its title is rewritten on
+  every metrics tick, so the label changes width whenever a reading gains or loses a
+  digit. Because menu bar items are laid out from the right, that width change shifts
+  the item's window horizontally — and the 2.0.3 code treated *any* movement of the
+  anchor as "the menu bar retracted" and dismissed the popover. It now only dismisses on
+  a vertical move, which is what actually happens when the menu bar hides. The
+  full-screen fix from 2.0.3 (#11) still applies.
+
+  Anyone on 2.0.3 should update.
+
+---
+
+## [2.0.3] — 2026-08-05
+
+### Fixed
+
+- **Popover no longer jumps off-screen in full-screen mode** — with the menu bar
+  auto-hidden, scrolling inside the dashboard could make it flash and jump to the
+  top-right corner with its top edge clipped. The popover is anchored to the menu bar
+  item, and when the menu bar retracted the anchor slid off-screen and took the popover
+  with it. It now dismisses when its anchor moves or leaves the screen. (#11)
+- **CPU temperature no longer includes SSD sensors** — the CPU average collected every
+  `T[pes]*` SMC key, which swept in `Ts1P` and `TsOP`. Those are SSD proximity sensors
+  sitting around 31–33 °C that barely move under load, pulling the reported CPU
+  temperature roughly 0.7 °C low at idle and further under load.
+
+### Documentation
+
+- **Added the `sensor-research/` toolkit** — referenced from the README, `SENSORS.md`,
+  `CONTRIBUTING.md` and this changelog since 2.0.0, but never actually committed, so no
+  one could run the scanners to validate sensor keys on their own hardware. (#13)
+- **Clarified VRM vs memory sensors in `SENSORS.md`** — the VRM table had no description
+  column, so keys like `TVMr` appeared unexplained, and `TVm0` was documented twice with
+  conflicting meanings. SMC keys are case-sensitive: `TVm0` is the memory die, `TVM0` and
+  `TVMr` are voltage regulators. Also notes the expected VRM temperature range, which
+  runs well above die temperature by design. (#12)
+- **Corrected the `Ts0K`–`Ts0Y` range** — previously listed as an "SSD thermal array"
+  while the same keys were simultaneously documented as CPU/SoC complex sensors. They
+  are CPU/SoC sensors.
+
+---
+
 ## [2.0.2] — 2026-05-30
 
 ### The "Brew Install Actually Works" Release

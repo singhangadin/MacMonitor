@@ -2,22 +2,47 @@ import AppKit
 import SwiftUI
 import Combine
 import ServiceManagement
+import WidgetKit
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate, NSWindowDelegate {
 
     var statusItem: NSStatusItem?
     var popover    = NSPopover()
     var welcomeWin: NSWindow?
+    var settingsWin: NSWindow?
     let model      = SystemStatsModel()
+
+    // Anchor tracking for the popover — see beginTrackingAnchor(_:).
+    private var anchorObservers: [NSObjectProtocol] = []
+    private var anchorOrigin: NSPoint?
+    private var outsideClickMonitor: Any?
+    private var lastWidgetReload = Date.distantPast
 
     // Subscribe to model changes so the label updates in sync with each tick,
     // not on a separate independent timer that may fire before data is ready.
     private var cancellables = Set<AnyCancellable>()
+    private var lastCPU = 0
+    private var lastPressure = 1
+    private var lastTemp = 0.0
+    private var lastPower = 0.0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Menu-bar-only by default; show in Dock when the user opts in.
+        let defaults = UserDefaults.standard
+        let hadMenuBarStyle = defaults.object(forKey: "menuBarStyle") != nil
+        defaults.register(defaults: [
+            "appTheme": AppTheme.automatic.rawValue,
+            "menuBarStyle": "dot",
+            "showDockIcon": false,
+        ])
+
+        // Preserve the PR's former compact-menu-bar preference for existing users.
+        if !hadMenuBarStyle && defaults.bool(forKey: "cpuOnlyMenuBar") {
+            defaults.set("cpu", forKey: "menuBarStyle")
+        }
+
         NSApp.setActivationPolicy(
-            UserDefaults.standard.bool(forKey: "showDockIcon") ? .regular : .accessory)
+            defaults.bool(forKey: "showDockIcon") ? .regular : .accessory)
 
         setupMenuBar()
         model.startMonitoring()
@@ -28,7 +53,23 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         Publishers.CombineLatest4(model.$cpuUsage, model.$memPressureLevel, model.$cpuTemp, model.$totalPower)
             .receive(on: DispatchQueue.main)
             .sink { [weak self] cpu, pressure, temp, power in
+                self?.lastCPU = cpu
+                self?.lastPressure = pressure
+                self?.lastTemp = temp
+                self?.lastPower = power
                 self?.updateLabel(cpu: cpu, pressure: pressure, temp: temp, power: power)
+                self?.refreshWidgetsIfDue()
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.updateLabel(cpu: self.lastCPU,
+                                 pressure: self.lastPressure,
+                                 temp: self.lastTemp,
+                                 power: self.lastPower)
             }
             .store(in: &cancellables)
 
@@ -57,6 +98,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if let btn = statusItem?.button {
             btn.image = createCircleImage(color: .systemGreen)
             btn.title = ""
+            btn.toolTip = "MacMonitor"
             btn.target = self
             btn.action = #selector(handleClick)
             btn.sendAction(on: [.leftMouseUp, .rightMouseUp])
@@ -65,8 +107,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentSize = NSSize(width: 340, height: 640)
         popover.behavior    = .transient
         popover.animates    = true
+        popover.delegate    = self
         popover.contentViewController = NSHostingController(
-            rootView: PopoverView(model: model).preferredColorScheme(.dark)
+            rootView: PopoverView(model: model)
         )
     }
 
@@ -85,7 +128,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateLabel(cpu: Int, pressure: Int, temp: Double, power: Double) {
         guard let btn = statusItem?.button else { return }
-
         // pressure: 1 = Normal, 2 = Warning, 4 = Critical
         let color: NSColor
         if cpu >= 85 || pressure >= 4 {
@@ -149,6 +191,156 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 win.collectionBehavior.insert(.fullScreenAuxiliary)
                 win.makeKey()
             }
+            beginTrackingAnchor(sender)
+        }
+    }
+
+    // MARK: - Anchor tracking
+
+    /// The popover is positioned relative to the status item button. In native
+    /// full-screen mode the menu bar auto-hides, which slides the button's window
+    /// off the top of the screen. AppKit keeps the popover attached to that anchor,
+    /// so it flashes and lands in the top-right corner with its top edge clipped.
+    ///
+    /// Rather than fight AppKit's positioning, dismiss the popover as soon as the
+    /// anchor stops being a valid thing to point at.
+    private func beginTrackingAnchor(_ button: NSStatusBarButton) {
+        endTrackingAnchor()
+
+        guard let anchorWindow = button.window else { return }
+        anchorOrigin = anchorWindow.frame.origin
+
+        let center = NotificationCenter.default
+
+        // The menu bar retracting moves the status item's window.
+        anchorObservers.append(
+            center.addObserver(forName: NSWindow.didMoveNotification,
+                               object: anchorWindow,
+                               queue: .main) { [weak self] _ in
+                self?.closeIfAnchorInvalid(anchorWindow)
+            }
+        )
+
+        // Display or Space changes can also relocate the anchor.
+        anchorObservers.append(
+            center.addObserver(forName: NSApplication.didChangeScreenParametersNotification,
+                               object: nil,
+                               queue: .main) { [weak self] _ in
+                self?.closeIfAnchorInvalid(anchorWindow)
+            }
+        )
+
+        // Collapse when the user clicks anything outside the dashboard, the same way
+        // clicking the menu bar icon again collapses it.
+        //
+        // NSPopover.behavior = .transient is supposed to do this, but the app runs as
+        // .accessory: a click in another application is delivered to that application
+        // and never reaches us, so the popover just sits there. A global monitor sees
+        // those events. It deliberately does not fire for clicks inside our own
+        // windows — global monitors only observe events routed to other apps — so
+        // interacting with the dashboard itself won't dismiss it, and clicking the menu
+        // bar icon still goes through togglePopover.
+        outsideClickMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] _ in
+            self?.dismissPopoverSoon()
+        }
+    }
+
+    private func closeIfAnchorInvalid(_ anchorWindow: NSWindow) {
+        guard popover.isShown else { return }
+
+        // Only a *vertical* move means the menu bar itself retracted.
+        //
+        // The status item uses NSStatusItem.variableLength and its title is rewritten
+        // on every metrics tick, so the label's width changes whenever a value gains or
+        // loses a digit. Menu bar items are laid out from the right, so a width change
+        // shifts the anchor window's origin.x — which is not a reason to dismiss.
+        // Comparing the full origin here closed the popover roughly once a second and
+        // made the dashboard impossible to interact with.
+        if let origin = anchorOrigin, abs(anchorWindow.frame.origin.y - origin.y) > 1 {
+            dismissPopoverSoon()
+            return
+        }
+
+        // Anchor left its screen entirely — nothing valid to point at. Deliberately
+        // checks for *no* intersection rather than full containment, so a status item
+        // that is merely clipped by a crowded menu bar doesn't dismiss the popover.
+        if let screen = anchorWindow.screen, !screen.frame.intersects(anchorWindow.frame) {
+            dismissPopoverSoon()
+        }
+    }
+
+    /// Closes the popover on a later runloop pass rather than inline.
+    ///
+    /// Both triggers here are window-geometry notifications, which AppKit posts from
+    /// inside a CoreAnimation transaction. Tearing the popover down synchronously at
+    /// that point re-enters window animation teardown and can over-release
+    /// `_NSWindowTransformAnimation`, which showed up as an EXC_BAD_ACCESS in
+    /// `objc_release` under `CA::Context::commit_transaction`. Deferring lets the
+    /// current transaction finish before the popover goes away.
+    private func dismissPopoverSoon() {
+        DispatchQueue.main.async { [weak self] in
+            guard let self, self.popover.isShown else { return }
+            self.popover.performClose(nil)
+        }
+    }
+
+    private func endTrackingAnchor() {
+        for observer in anchorObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        anchorObservers.removeAll()
+        anchorOrigin = nil
+
+        if let monitor = outsideClickMonitor {
+            NSEvent.removeMonitor(monitor)
+            outsideClickMonitor = nil
+        }
+    }
+
+    // MARK: - Widget refresh
+
+    // Measured, not guessed. chronod honoured app-driven reloads at a strict 30s with
+    // no drops, then at 5s (renders every 5.4-6.4s, zero rejections), so the throttle
+    // was always the bottleneck rather than the system budget. Now 2s.
+    //
+    // This is the floor worth using. Each reload wakes the widget extension, which then
+    // samples CPU over a 0.4s window before rendering, so a shorter interval would keep
+    // that process almost continuously awake for a glanceable snapshot. The dashboard is
+    // the live view; widgets are snapshot-based by design and cannot stream.
+    private static let widgetReloadInterval: TimeInterval = 2
+
+    /// Pushes a timeline reload to the desktop widget so it tracks the dashboard.
+    ///
+    /// The widget samples its own data, but left alone it only refreshes on the cadence
+    /// WidgetKit grants it — far slower than the app's sampling, and its timeline policy
+    /// is only a request, not a guarantee. While the app is running we can drive reloads
+    /// so the widget stays close to live.
+    ///
+    /// Throttled deliberately: WidgetKit budgets reloads per extension and starts
+    /// dropping them when one is too chatty, so reloading on every metrics tick would
+    /// make the widget update *less* often, not more.
+    private func refreshWidgetsIfDue() {
+        let now = Date()
+        guard now.timeIntervalSince(lastWidgetReload) >= Self.widgetReloadInterval else { return }
+        lastWidgetReload = now
+        WidgetCenter.shared.reloadAllTimelines()
+    }
+
+    // MARK: - NSPopoverDelegate
+
+    func popoverDidClose(_ notification: Notification) {
+        endTrackingAnchor()
+    }
+
+    // MARK: - NSWindowDelegate
+
+    func windowWillClose(_ notification: Notification) {
+        // Drop the reference so the next "Settings…" builds a fresh window rather
+        // than trying to reuse a closed one. Covers both Done and the close button.
+        if (notification.object as? NSWindow) === settingsWin {
+            settingsWin = nil
         }
     }
 
@@ -182,7 +374,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         win.titlebarAppearsTransparent  = true
         win.titleVisibility             = .hidden
         win.isMovableByWindowBackground = true
-        win.backgroundColor             = NSColor(Color(hex: "0E0E12"))
+        win.backgroundColor             = .windowBackgroundColor
         win.contentViewController       = NSHostingController(rootView: WelcomeView())
         win.center()
         win.makeKeyAndOrderFront(nil)
@@ -193,6 +385,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Settings window
 
     @objc func openSettings() {
+        // Reuse the existing window instead of stacking a new one on every invocation.
+        if let existing = settingsWin {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+
         let win = NSWindow(
             contentRect:  NSRect(x: 0, y: 0, width: 320, height: 560),
             styleMask:    [.titled, .closable, .fullSizeContentView],
@@ -201,13 +400,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         win.title                      = "MacMonitor Settings"
         win.titlebarAppearsTransparent = true
-        win.backgroundColor            = NSColor(Color(hex: "1C1C1E"))
-        win.contentViewController      = NSHostingController(
-            rootView: SettingsSheet(isPresented: .constant(true))
-                .preferredColorScheme(.dark)
+        // Adaptive so the window tracks the chosen appearance (#14) rather than
+        // being pinned to a dark hex value.
+        win.backgroundColor            = .windowBackgroundColor
+        win.isReleasedWhenClosed       = false
+
+        // SettingsSheet drives dismissal through its isPresented binding. As a
+        // standalone window this used to be passed .constant(true), which is
+        // read-only — so tapping Done wrote to nothing and the window never closed.
+        // Back the binding with an actual close, weakly so the window and its
+        // content view don't retain each other.
+        let dismiss = Binding<Bool>(
+            get: { true },
+            set: { [weak win] shouldPresent in
+                if !shouldPresent { win?.performClose(nil) }
+            }
         )
+
+        // No preferredColorScheme override — SettingsSheet applies the user's
+        // Automatic/Light/Dark choice itself.
+        win.contentViewController = NSHostingController(
+            rootView: SettingsSheet(isPresented: dismiss)
+        )
+        win.delegate = self
         win.center()
         win.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+        settingsWin = win
     }
 }

@@ -48,8 +48,14 @@ All values in **°C**.
 | `TMVR`  | Memory VRM temperature | 37.2 °C | High |
 | `T5SP`  | NAND / SSD controller | 35.1 °C | High |
 | `Ts1P` / `TsOP` | SSD proximity sensors | 31–33 °C | High |
-| `Ts0K`–`Ts0Y` | SSD thermal array (18 sensors) | 40–49 °C | High |
 | `TH0T` / `TH0x` | NAND flash chip temperature | 37.4 °C | High |
+
+> **Correction:** earlier revisions of this file also listed `Ts0K`–`Ts0Y` here as an
+> "SSD thermal array". That was wrong — those keys are **CPU/SoC complex** sensors and
+> are documented under [CPU Domain](#cpu-domain). Measured on an M2, `Ts0K`–`Ts0c` read
+> 41–51 °C and track the core clusters, while the genuine SSD sensors (`T5SP`, `Ts1P`,
+> `TsOP`, `TH0T`) sit 10 °C cooler at 31–37 °C. Only `Ts1P` and `TsOP` share the `Ts`
+> prefix with storage.
 
 ### System & Board
 
@@ -68,13 +74,27 @@ All values in **°C**.
 
 ### VRM (Voltage Regulators)
 
-| SMC Key | Live Value |
-|---------|------------|
-| `TVD0`  | 56.8 °C |
-| `TVM0` / `TVm0` | 53.6 °C |
-| `TVS0`–`TVSx` | 35.1 °C |
-| `TVA0`  | 31.0 °C |
-| `TVMC`  | 41.4 °C |
+VRM sensors measure the **power-delivery circuitry** (voltage regulator modules and
+their inductors), not the silicon die. They normally read **20–40 °C hotter than the
+die** under sustained load, and are routinely the hottest sensors on the board.
+A VRM reading of 90–105 °C under heavy sustained load is expected behaviour, not a
+fault — Apple's thermal management throttles the SoC long before VRM limits
+(typically ~125 °C) are reached.
+
+| SMC Key | Description | Live Value |
+|---------|-------------|------------|
+| `TVD0`  | Display / SoC rail VRM | 56.8 °C |
+| `TVM0`  | Memory rail VRM | 53.6 °C |
+| `TVMr` / `TMVR` | Memory VRM (see [Memory & Storage](#memory--storage)) | 37.2 °C |
+| `TVMC`  | Memory VRM controller | 41.4 °C |
+| `TVS0`–`TVSx` | System rail VRMs | 35.1 °C |
+| `TVA0`  | Analog / auxiliary rail VRM | 31.0 °C |
+
+> **Note on key casing:** SMC keys are case-sensitive. `TVm0` (lowercase `m`) is the
+> unified LPDDR5 **memory die** temperature listed under
+> [Memory & Storage](#memory--storage). `TVM0` and `TVMr` (uppercase `M`) are
+> **voltage-regulator** sensors. These are different sensors measuring different
+> things — do not compare their values directly.
 
 ---
 
